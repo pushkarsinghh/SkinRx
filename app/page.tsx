@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Upload, FileText, Pill, AlertTriangle, Zap, Microscope, Languages, Bot, User, Volume2, MapPin, SendHorizonal, CircleDashed } from 'lucide-react';
+import { Upload, FileText, AlertTriangle, Zap, Microscope, Languages, Bot, User, Volume2, MapPin, SendHorizonal, CircleDashed } from 'lucide-react';
 
 // --- MOCK DATA FOR HACKATHON DEMO ---
 const mockDoctors = [
@@ -15,7 +15,7 @@ const mockDoctors = [
 // --- MAIN PAGE COMPONENT ---
 export default function SkinRxPage() {
     // Core State
-    const [image, setImage] = useState(null);
+    const [image, setImage] = useState<string | null>(null);
     const [previewUrl, setPreviewUrl] = useState('');
     const [initialResult, setInitialResult] = useState(null);
     const [translatedResult, setTranslatedResult] = useState(null);
@@ -26,16 +26,18 @@ export default function SkinRxPage() {
     const [selectedLanguage, setSelectedLanguage] = useState('en');
     
     // Chat State
-    const [chatHistory, setChatHistory] = useState([]);
+    type ChatMessage = { role: 'user' | 'model'; text: string };
+    const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
     const [isChatting, setIsChatting] = useState(false);
     const [userInput, setUserInput] = useState('');
-    const chatEndRef = useRef(null);
+    const chatEndRef = useRef<HTMLDivElement>(null) as React.RefObject<HTMLDivElement>;
 
     // --- API & LOGIC FUNCTIONS ---
 
     // Function to handle image selection and preview
-    const handleImageChange = (e) => {
-        const file = e.target.files[0];
+    const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const files = e.target.files;
+        const file = files && files[0];
         if (file) {
             if (file.size > 4 * 1024 * 1024) { // 4MB API limit
                 setError('Image size exceeds 4MB. Please upload a smaller file.');
@@ -60,30 +62,70 @@ export default function SkinRxPage() {
     };
     
     // Generic Gemini API call function with exponential backoff
-    const callGeminiAPI = async (payload, retries = 3) => {
-        const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
-        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-        
-        for (let i = 0; i < retries; i++) {
-            try {
-                const response = await fetch(apiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (response.ok) {
-                    return await response.json();
-                }
-                if (response.status === 429 || response.status >= 500) { // Retry on rate limit or server error
-                    await new Promise(res => setTimeout(res, 1000 * Math.pow(2, i)));
-                    continue;
-                }
-                throw new Error(`API request failed with status ${response.status}`);
-            } catch (err) {
-                if (i === retries - 1) throw err;
-            }
+    interface GeminiContentPart {
+      text?: string;
+      inline_data?: {
+        mime_type: string;
+        data: string;
+      };
+    }
+
+    interface GeminiContent {
+      role?: string;
+      parts: GeminiContentPart[];
+    }
+
+    interface GeminiSystemInstruction {
+      parts: GeminiContentPart[];
+    }
+
+    interface GeminiGenerationConfig {
+      responseMimeType?: string;
+    }
+
+    interface GeminiPayload {
+      contents: GeminiContent[];
+      systemInstruction?: GeminiSystemInstruction;
+      generationConfig?: GeminiGenerationConfig;
+    }
+
+    interface GeminiCandidate {
+      content: {
+        parts: GeminiContentPart[];
+      };
+    }
+
+    interface GeminiAPIResponse {
+      candidates?: GeminiCandidate[];
+    }
+
+    const callGeminiAPI = async (
+      payload: GeminiPayload,
+      retries: number = 3
+    ): Promise<GeminiAPIResponse> => {
+      const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY || '';
+      const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+      
+      for (let i = 0; i < retries; i++) {
+        try {
+          const response = await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          if (response.ok) {
+            return await response.json();
+          }
+          if (response.status === 429 || response.status >= 500) { // Retry on rate limit or server error
+            await new Promise(res => setTimeout(res, 1000 * Math.pow(2, i)));
+            continue;
+          }
+          throw new Error(`API request failed with status ${response.status}`);
+        } catch (err) {
+          if (i === retries - 1) throw err;
         }
-        throw new Error("API request failed after multiple retries.");
+      }
+      throw new Error("API request failed after multiple retries.");
     };
     
     // Main diagnosis handler
@@ -116,19 +158,23 @@ export default function SkinRxPage() {
             
             if (data.candidates && data.candidates[0]) {
                 const resultText = data.candidates[0].content.parts[0].text;
-                const resultJson = JSON.parse(resultText);
-                setInitialResult(resultJson);
-                setChatHistory([{
-                    role: 'model',
-                    text: "Hello! I've analyzed your image. Here's a summary of my findings. You can ask me follow-up questions below."
-                }]);
+                if (typeof resultText === 'string') {
+                    const resultJson = JSON.parse(resultText);
+                    setInitialResult(resultJson);
+                    setChatHistory([{
+                        role: 'model',
+                        text: "Hello! I've analyzed your image. Here's a summary of my findings. You can ask me follow-up questions below."
+                    }]);
+                } else {
+                    throw new Error('Analysis failed. The model returned an invalid response.');
+                }
             } else {
                 throw new Error('Analysis failed. The model returned an invalid response.');
             }
 
         } catch (err) {
             console.error("Diagnosis error:", err);
-            setError(`An error occurred during analysis: ${err.message}`);
+            setError(`An error occurred during analysis: ${err instanceof Error ? err.message : String(err)}`);
         } finally {
             setLoading(false);
         }
@@ -148,7 +194,15 @@ export default function SkinRxPage() {
                  const translationPrompt = `Translate the string values in this JSON object to Hindi. Maintain the exact same JSON structure and keys.\n\nJSON:\n${JSON.stringify(initialResult)}`;
                  const payload = { contents: [{ parts: [{ text: translationPrompt }] }] };
                  const data = await callGeminiAPI(payload);
-                 const translatedText = data.candidates[0].content.parts[0].text;
+                 const translatedText =
+                   data?.candidates &&
+                   data.candidates[0] &&
+                   data.candidates[0].content &&
+                   data.candidates[0].content.parts &&
+                   data.candidates[0].content.parts[0] &&
+                   typeof data.candidates[0].content.parts[0].text === 'string'
+                     ? data.candidates[0].content.parts[0].text
+                     : '';
                  // Clean up potential markdown code block
                  const cleanedText = translatedText.replace(/```json\n?|\n?```/g, '');
                  setTranslatedResult(JSON.parse(cleanedText));
@@ -166,7 +220,7 @@ export default function SkinRxPage() {
     const handleSendMessage = async () => {
         if (!userInput.trim() || !initialResult) return;
 
-        const newChatHistory = [...chatHistory, { role: 'user', text: userInput }];
+        const newChatHistory: ChatMessage[] = [...chatHistory, { role: 'user', text: userInput }];
         setChatHistory(newChatHistory);
         setUserInput('');
         setIsChatting(true);
@@ -181,7 +235,15 @@ export default function SkinRxPage() {
             };
 
             const data = await callGeminiAPI(payload);
-            const responseText = data.candidates[0].content.parts[0].text;
+            const responseText =
+                data?.candidates &&
+                data.candidates[0] &&
+                data.candidates[0].content &&
+                data.candidates[0].content.parts &&
+                data.candidates[0].content.parts[0] &&
+                typeof data.candidates[0].content.parts[0].text === 'string'
+                    ? data.candidates[0].content.parts[0].text
+                    : "Sorry, I couldn't generate a response.";
             setChatHistory(prev => [...prev, { role: 'model', text: responseText }]);
 
         } catch (err) {
@@ -198,15 +260,20 @@ export default function SkinRxPage() {
     }, [chatHistory]);
 
     // Text-to-Speech handler
-    const speakText = (text, lang) => {
-        if ('speechSynthesis' in window) {
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = lang === 'hi' ? 'hi-IN' : 'en-US';
-            window.speechSynthesis.cancel(); // Cancel any previous speech
-            window.speechSynthesis.speak(utterance);
-        } else {
-            alert('Your browser does not support text-to-speech.');
-        }
+    interface SpeakTextOptions {
+      text: string;
+      lang: 'en' | 'hi';
+    }
+
+    const speakText = (text: SpeakTextOptions['text'], lang: SpeakTextOptions['lang']): void => {
+      if ('speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = lang === 'hi' ? 'hi-IN' : 'en-US';
+        window.speechSynthesis.cancel(); // Cancel any previous speech
+        window.speechSynthesis.speak(utterance);
+      } else {
+        alert('Your browser does not support text-to-speech.');
+      }
     };
     
 
@@ -252,7 +319,7 @@ export default function SkinRxPage() {
                         {loading && <SkeletonLoader />}
                         {translatedResult && (
                             <div className="flex flex-col flex-grow">
-                                <ResultDisplay result={translatedResult} speakText={speakText} lang={selectedLanguage} />
+                                <ResultDisplay result={translatedResult} speakText={speakText} lang={selectedLanguage as 'en' | 'hi'} />
                                 <ChatInterface history={chatHistory} onSendMessage={handleSendMessage} userInput={userInput} setUserInput={setUserInput} isChatting={isChatting} chatEndRef={chatEndRef} />
                                 <DoctorLocator doctors={mockDoctors} />
                             </div>
@@ -267,7 +334,12 @@ export default function SkinRxPage() {
 
 // --- SUB-COMPONENTS ---
 
-const LanguageSelector = ({ selectedLanguage, setSelectedLanguage }) => (
+type LanguageSelectorProps = {
+    selectedLanguage: string;
+    setSelectedLanguage: (lang: string) => void;
+};
+
+const LanguageSelector = ({ selectedLanguage, setSelectedLanguage }: LanguageSelectorProps) => (
     <div className="flex items-center gap-2 bg-slate-100 border border-slate-200 rounded-lg p-1">
         <Languages className="h-5 w-5 text-slate-500 ml-2" />
         <select value={selectedLanguage} onChange={(e) => setSelectedLanguage(e.target.value)} className="bg-transparent font-semibold text-slate-700 focus:outline-none cursor-pointer">
@@ -277,7 +349,21 @@ const LanguageSelector = ({ selectedLanguage, setSelectedLanguage }) => (
     </div>
 );
 
-const ResultDisplay = ({ result, speakText, lang }) => (
+type DiagnosisResult = {
+    diseaseName: string;
+    description: string;
+    severity: {
+        level: string;
+        details: string;
+    };
+    possibleCures: {
+        otc: string[];
+        professional: string[];
+    };
+    disclaimer: string;
+};
+
+const ResultDisplay = ({ result, speakText, lang }: { result: DiagnosisResult; speakText: (text: string, lang: 'en' | 'hi') => void; lang: 'en' | 'hi' }) => (
     <div className="space-y-4 animate-fade-in mb-4">
         <div>
             <div className="flex justify-between items-start">
@@ -299,7 +385,21 @@ const ResultDisplay = ({ result, speakText, lang }) => (
     </div>
 );
 
-const ChatInterface = ({ history, onSendMessage, userInput, setUserInput, isChatting, chatEndRef }) => (
+const ChatInterface = ({
+    history,
+    onSendMessage,
+    userInput,
+    setUserInput,
+    isChatting,
+    chatEndRef,
+}: {
+    history: { role: 'user' | 'model'; text: string }[];
+    onSendMessage: () => void;
+    userInput: string;
+    setUserInput: (input: string) => void;
+    isChatting: boolean;
+    chatEndRef: React.RefObject<HTMLDivElement>;
+}) => (
     <div className="flex-grow flex flex-col mt-4 border-t border-slate-200 pt-4">
         <div className="flex-grow space-y-4 overflow-y-auto pr-2 max-h-[300px]">
             {history.map((msg, index) => (
@@ -321,7 +421,14 @@ const ChatInterface = ({ history, onSendMessage, userInput, setUserInput, isChat
     </div>
 );
 
-const DoctorLocator = ({ doctors }) => (
+type Doctor = {
+    name: string;
+    city: string;
+    specialty: string;
+    address: string;
+};
+
+const DoctorLocator = ({ doctors }: { doctors: Doctor[] }) => (
     <div className="mt-6 border-t border-slate-200 pt-4">
         <h3 className="text-lg font-semibold text-slate-700 mb-2">3. Find a Specialist Nearby</h3>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -337,8 +444,12 @@ const DoctorLocator = ({ doctors }) => (
 );
 
 const SkeletonLoader = () => <div className="space-y-6 animate-pulse"><div className="space-y-2"><div className="h-4 bg-slate-200 rounded w-1/3"></div><div className="h-8 bg-slate-300 rounded w-1/2"></div></div><div className="space-y-2"><div className="h-4 bg-slate-200 rounded w-full"></div><div className="h-4 bg-slate-200 rounded w-3/4"></div></div><div className="space-y-2"><div className="h-4 bg-slate-200 rounded w-1/4"></div><div className="h-8 bg-slate-300 rounded-full w-1/3"></div></div></div>;
-const ErrorMessage = ({ message }) => <div className="bg-red-100 border-l-4 border-red-500 text-red-800 p-4 rounded-r-lg" role="alert"><p className="font-bold">An Error Occurred</p><p className="text-sm">{message}</p></div>;
-const SpeakerButton = ({ onClick }) => <button onClick={onClick} className="p-2 rounded-full hover:bg-teal-100 text-teal-500 transition-colors"><Volume2 size={20} /></button>;
+const ErrorMessage = ({ message }: { message: string }) => <div className="bg-red-100 border-l-4 border-red-500 text-red-800 p-4 rounded-r-lg" role="alert"><p className="font-bold">An Error Occurred</p><p className="text-sm">{message}</p></div>;
+const SpeakerButton = ({ onClick }: { onClick: React.MouseEventHandler<HTMLButtonElement> }) => (
+    <button onClick={onClick} className="p-2 rounded-full hover:bg-teal-100 text-teal-500 transition-colors">
+        <Volume2 size={20} />
+    </button>
+);
 const Disclaimer = () => <div className="mt-8 bg-amber-50 border-l-4 border-amber-400 text-amber-900 p-4 rounded-lg shadow-sm"><div className="flex"><div className="py-1"><AlertTriangle className="h-6 w-6 text-amber-500 mr-4" /></div><div><p className="font-bold">Important Disclaimer</p><p className="text-sm">SkinRx is an AI-powered informational tool, not a substitute for professional medical diagnosis. Please consult a qualified dermatologist for any health concerns.</p></div></div></div>
 
 // --- GLOBAL STYLES ---
