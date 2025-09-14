@@ -5,7 +5,7 @@
 ---
 
 ## 🚀 [Live Demo](#)  
-Visit: [SkinRx Website](https://nextjs.org/)
+Visit: [SkinRx Website](https://skin-rx.vercel.app/)
 
 ---
 
